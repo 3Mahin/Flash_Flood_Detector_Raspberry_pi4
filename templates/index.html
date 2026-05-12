@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flood Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        /* Professional Alarm Pulse (Replaces the shake) */
+        @keyframes emergencyPulse {
+            0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.4); border-color: #991b1b; }
+            70% { box-shadow: 0 0 0 15px rgba(220, 38, 38, 0); border-color: #ef4444; }
+            100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); border-color: #991b1b; }
+        }
+
+        .alarm-active {
+            animation: emergencyPulse 1.5s infinite;
+            background-color: rgba(127, 29, 29, 0.1) !important;
+            border: 1px solid #ef4444;
+            color: #fca5a5 !important;
+        }
+
+        /* Elegant Rain Sweep (Replaces the diagonal lines) */
+        @keyframes rainSweep {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        .rain-active {
+            background: linear-gradient(270deg, #0f172a, #1e293b, #0c4a6e, #0f172a);
+            background-size: 400% 400%;
+            animation: rainSweep 8s ease infinite;
+            border-left: 4px solid #0284c7 !important;
+        }
+
+        /* Chart Tooltip customization */
+        canvas { filter: drop-shadow(0 4px 6px rgba(0, 0, 0, 0.3)); }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200 font-sans antialiased p-4 max-w-lg mx-auto">
+
+    <div class="text-center mb-6 mt-2">
+        <h1 class="text-3xl font-semibold text-slate-100 tracking-tight">
+            Flood Monitor
+        </h1>
+        <div id="alert-banner" class="mt-5 p-4 rounded-lg font-medium bg-emerald-900/40 text-emerald-400 border border-emerald-800 transition-all duration-300 text-sm tracking-widest uppercase shadow-md">
+            System Normal
+        </div>
+    </div>
+
+    <div id="rain-card" class="bg-slate-900 p-5 rounded-lg shadow-md mb-6 flex justify-between items-center border-l-4 border-slate-700 transition-all duration-500">
+        <span class="font-medium text-slate-400 text-sm uppercase tracking-wider">Environmental Status</span>
+        <div class="flex items-center space-x-3 bg-slate-950/50 px-4 py-2 rounded shadow-inner border border-slate-800">
+            <span class="relative flex h-3 w-3">
+              <span id="rain-ping" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-sky-400 opacity-75 hidden"></span>
+              <span id="rain-dot" class="relative inline-flex rounded-full h-3 w-3 bg-slate-600"></span>
+            </span>
+            <span id="rain-text" class="font-medium text-slate-500 uppercase tracking-widest text-xs">Clear</span>
+        </div>
+    </div>
+
+    <div class="bg-slate-900 p-1.5 rounded-lg shadow-md mb-6 flex space-x-1 border border-slate-800">
+        <button id="btn-ultrasonic" onclick="switchSensor('ultrasonic')" class="flex-1 py-2.5 px-4 rounded text-sm font-medium transition-all duration-200 bg-slate-700 text-white shadow">
+            Ultrasonic (HC-SR04)
+        </button>
+        <button id="btn-water" onclick="switchSensor('water')" class="flex-1 py-2.5 px-4 rounded text-sm font-medium transition-all duration-200 bg-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800">
+            Analog (STM32)
+        </button>
+    </div>
+
+    <div id="ultrasonic-view" class="bg-slate-900 p-6 rounded-lg shadow-md border border-slate-800 mb-6 transition-opacity duration-300">
+        <div class="flex justify-between items-end mb-4">
+            <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-widest">Distance Data</h2>
+            <p class="text-4xl font-light text-slate-100">
+                <span id="dist-val">0.0</span> <span class="text-lg text-slate-500 font-medium tracking-normal">cm</span>
+            </p>
+        </div>
+        
+        <div class="w-full bg-slate-950 rounded h-1.5 shadow-inner mb-6 overflow-hidden">
+            <div id="dist-bar" class="bg-sky-500 h-1.5 rounded transition-all duration-500 ease-out" style="width: 0%"></div>
+        </div>
+        <div class="relative h-40 w-full mt-2">
+            <canvas id="distanceChart"></canvas>
+        </div>
+    </div>
+
+    <div id="water-view" class="bg-slate-900 p-6 rounded-lg shadow-md border border-slate-800 hidden transition-opacity duration-300">
+        <h2 class="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-6">STM32 Water Sensor</h2>
+        
+        <div class="flex flex-col items-center justify-center py-8 bg-slate-950 rounded shadow-inner border border-slate-800 mb-8">
+            <p class="text-5xl font-light text-slate-200" id="water-val">0</p>
+            <p class="text-slate-600 font-medium mt-2 uppercase tracking-widest text-xs">Raw ADC Value</p>
+        </div>
+        
+        <div>
+            <div class="flex justify-between mb-2">
+                <span class="font-medium text-slate-400 text-xs uppercase tracking-wider">Saturation Level</span>
+                <span class="font-medium text-sky-400 text-sm"><span id="water-pct">0</span>%</span>
+            </div>
+            <div class="w-full bg-slate-950 rounded h-1.5 shadow-inner overflow-hidden">
+                <div id="water-bar" class="bg-sky-500 h-1.5 rounded transition-all duration-500 ease-out" style="width: 0%"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Professional Chart.js Setup
+        const ctx = document.getElementById('distanceChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: { 
+                labels: [], 
+                datasets: [{ 
+                    label: 'Distance (cm)', 
+                    data: [], 
+                    borderColor: '#38bdf8', // Sky 400
+                    backgroundColor: 'rgba(56, 189, 248, 0.05)', 
+                    fill: true, 
+                    tension: 0.3, 
+                    pointRadius: 0, 
+                    borderWidth: 2
+                }] 
+            },
+            options: { 
+                responsive: true, 
+                maintainAspectRatio: false,
+                scales: { 
+                    y: { 
+                        beginAtZero: true,
+                        suggestedMax: 35, 
+                        grid: { color: 'rgba(255, 255, 255, 0.03)', drawBorder: false },
+                        ticks: { color: '#64748b', font: { size: 10 } }
+                    }, 
+                    x: { display: false } 
+                }, 
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                animation: false,
+                layout: { padding: 0 }
+            }
+        });
+
+        let currentMode = "ultrasonic";
+
+        // Handle Button Clicks
+        async function switchSensor(mode) {
+            if (currentMode === mode) return;
+            currentMode = mode;
+            
+            updateButtonStyles(mode);
+            
+            document.getElementById('ultrasonic-view').classList.toggle('hidden', mode !== 'ultrasonic');
+            document.getElementById('water-view').classList.toggle('hidden', mode !== 'water');
+            
+            await fetch('/api/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sensor: mode })
+            });
+            
+            chart.data.labels = [];
+            chart.data.datasets[0].data = [];
+        }
+
+        // Button Styles
+        function updateButtonStyles(mode) {
+            const btnU = document.getElementById('btn-ultrasonic');
+            const btnW = document.getElementById('btn-water');
+
+            const activeClass = "flex-1 py-2.5 px-4 rounded text-sm font-medium transition-all duration-200 bg-slate-700 text-white shadow";
+            const inactiveClass = "flex-1 py-2.5 px-4 rounded text-sm font-medium transition-all duration-200 bg-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800";
+
+            if (mode === 'ultrasonic') {
+                btnU.className = activeClass;
+                btnW.className = inactiveClass;
+            } else {
+                btnW.className = activeClass;
+                btnU.className = inactiveClass;
+            }
+        }
+
+        // Data Polling Loop
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/data');
+                const data = await res.json();
+
+                // 1. Update Alert Banner (Professional Pulse)
+                const banner = document.getElementById('alert-banner');
+                
+                if (data.buzzer_active) {
+                    banner.innerText = "CRITICAL: " + data.alert_message;
+                    banner.className = "mt-5 p-4 rounded-lg font-medium tracking-widest text-sm uppercase shadow-lg alarm-active";
+                } else {
+                    banner.innerText = "System Normal";
+                    banner.className = "mt-5 p-4 rounded-lg font-medium bg-emerald-900/20 text-emerald-500 border border-emerald-800/50 transition-all duration-300 text-sm tracking-widest uppercase shadow-sm";
+                }
+
+                // 2. Update Rain UI (Mood Sweep)
+                const rainCard = document.getElementById('rain-card');
+                const rainText = document.getElementById('rain-text');
+                const rainDot = document.getElementById('rain-dot');
+                const rainPing = document.getElementById('rain-ping');
+
+                if (data.is_raining) {
+                    rainCard.classList.add('rain-active'); 
+                    rainText.innerText = "Precipitation";
+                    rainText.classList.replace('text-slate-500', 'text-sky-300');
+                    rainDot.classList.replace('bg-slate-600', 'bg-sky-400');
+                    rainPing.classList.remove('hidden');
+                } else {
+                    rainCard.classList.remove('rain-active');
+                    rainText.innerText = "Clear";
+                    rainText.classList.replace('text-sky-300', 'text-slate-500');
+                    rainDot.classList.replace('bg-sky-400', 'bg-slate-600');
+                    rainPing.classList.add('hidden');
+                }
+
+                // Sync UI buttons
+                if (currentMode !== data.active_sensor) {
+                    currentMode = data.active_sensor;
+                    updateButtonStyles(currentMode);
+                    document.getElementById('ultrasonic-view').classList.toggle('hidden', currentMode !== 'ultrasonic');
+                    document.getElementById('water-view').classList.toggle('hidden', currentMode !== 'water');
+                }
+
+                // 3. Update Ultrasonic UI
+                if (data.active_sensor === 'ultrasonic') {
+                    document.getElementById('dist-val').innerText = data.distance;
+                    let perc = Math.max(0, Math.min(100, ((30 - data.distance) / 25) * 100));
+                    document.getElementById('dist-bar').style.width = perc + '%';
+
+                    if (chart.data.labels.length > 30) { 
+                        chart.data.labels.shift(); 
+                        chart.data.datasets[0].data.shift(); 
+                    }
+                    chart.data.labels.push('');
+                    chart.data.datasets[0].data.push(data.distance);
+                    chart.update();
+                }
+
+                // 4. Update Water Sensor UI
+                if (data.active_sensor === 'water') {
+                    document.getElementById('water-val').innerText = data.water_raw;
+                    document.getElementById('water-pct').innerText = data.water_percent;
+                    document.getElementById('water-bar').style.width = data.water_percent + '%';
+                }
+
+            } catch (err) { 
+                console.error("Connection lost to server."); 
+            }
+        }, 500); 
+    </script>
+</body>
+</html>
